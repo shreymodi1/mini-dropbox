@@ -1,72 +1,105 @@
-from typing import Any, Dict
+from typing import Any, Dict, List
 import logging
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status, Form
+from fastapi.responses import StreamingResponse
+from auth.auth_service import get_current_user
+from . import file_service
 
+router = APIRouter(prefix="/files", tags=["Files"])
 logger = logging.getLogger(__name__)
 
-def upload_file_endpoint(request: Any) -> Dict[str, Any]:
-    """
-    Receives a file from a POST request, calls file_service to store it.
-    
-    Args:
-        request (Any): The incoming HTTP request containing file upload data.
-        
-    Returns:
-        Dict[str, Any]: A JSON response indicating success or failure.
-    """
-    # TODO: Validate the request (e.g., check file size, file type).
-    # TODO: Integrate with authentication/authorization if necessary.
+@router.post("/upload")
+async def upload_file_endpoint(
+    upload_file: UploadFile = File(...),
+    folder_id: str | None = Form(None),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """Handles file upload requests."""
+    print("Received file:", upload_file.filename)
     try:
-        # TODO: Retrieve file from request
-        # TODO: Call file_service to store the file
-        # e.g. file_service.store_file(uploaded_file)
+        # Add await here
+        file_metadata = await file_service.store_file(
+            user_id=str(current_user["id"]),
+            file_obj=upload_file,
+            folder_id=folder_id
+        )
         
-        return {"success": True, "message": "File uploaded successfully."}
-    except Exception as error:
-        logger.error("Error uploading file: %s", error)
-        return {"success": False, "message": "Failed to upload file."}
+        logger.info("File uploaded successfully: %s", file_metadata["file_id"])
+        return {
+            "message": "File uploaded successfully",
+            "file_id": file_metadata["file_id"]
+        }
 
-def download_file_endpoint(file_id: str) -> Any:
-    """
-    Returns file data to the client given a file ID.
-    
-    Args:
-        file_id (str): The unique identifier for the file.
-        
-    Returns:
-        Any: The file data.
-    """
-    # TODO: Integrate with authentication/authorization if necessary.
+    except Exception as error:
+        print("Upload error:", str(error))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(error)
+        )
+
+@router.get("/download/{file_id}")
+async def download_file_endpoint(
+    file_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+) -> StreamingResponse:
+    """Returns file data to the client."""
     try:
-        # TODO: Call file_service to retrieve the file by file_id
-        # e.g. file_data = file_service.get_file(file_id)
-        # TODO: Return file data (e.g., as a streaming response)
+        file_data = file_service.fetch_file(file_id)
         
-        return {"success": True, "file_data": b"Sample file content"}  # Example placeholder
+        # Verify user has access to this file
+        if str(current_user["id"]) != str(file_data["metadata"]["user_id"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+
+        # Return file as streaming response
+        return StreamingResponse(
+            iter([file_data["file_bytes"]]),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename={file_data['metadata']['original_name']}"
+            }
+        )
+
     except FileNotFoundError:
-        logger.warning("File not found for file_id: %s", file_id)
-        # TODO: Return appropriate HTTP response for file not found
-        return {"success": False, "message": "File not found."}
+        logger.warning("File not found: %s", file_id)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found"
+        )
     except Exception as error:
-        logger.error("Error downloading file: %s", error)
-        # TODO: Return appropriate HTTP error response
-        return {"success": False, "message": "Failed to download file."}
+        logger.error("Error downloading file: %s", str(error))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to download file"
+        )
 
-def list_files_endpoint(folder_id: str) -> Dict[str, Any]:
-    """
-    Shows the files within a folder for the authenticated user.
-    
-    Args:
-        folder_id (str): The folder identifier.
-        
-    Returns:
-        Dict[str, Any]: A JSON response containing the list of files.
-    """
-    # TODO: Integrate with authentication/authorization if necessary.
+
+
+
+@router.get("/list")
+async def list_files_endpoint(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    folder_id: str = None
+) -> Dict[str, Any]:
+    """Lists files for the authenticated user."""
+    print("Getting list of files...")
+    print("User:", current_user)
     try:
-        # TODO: Call file_service to list files in the specified folder
-        # e.g. files_list = file_service.list_files_in_folder(folder_id)
+        files = file_service.list_user_files(
+            user_id=str(current_user["id"]),
+            folder_id=folder_id
+        )
         
-        return {"success": True, "files": []}  # Example placeholder
+        return {
+            "files": files,
+            "total": len(files)
+        }
+
     except Exception as error:
-        logger.error("Error listing files in folder %s: %s", folder_id, error)
-        return {"success": False, "message": "Failed to list files."}
+        logger.error("Error listing files: %s", str(error))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list files"
+        )
